@@ -51,6 +51,22 @@ export class CategoriasService {
     return categoriaEncontrada;
   }
 
+  async consultarCategoriaPeloIdJogador(idJogador: any): Promise<Categoria> {
+    const categoriaEncontrada = await this.categoriaModel
+      .findOne()
+      .where('jogadores')
+      .in(idJogador)
+      .exec();
+
+    if (!categoriaEncontrada) {
+      throw new NotFoundException(
+        `Jogador ${idJogador} não está registrado em nenhuma categoria`,
+      );
+    }
+
+    return categoriaEncontrada;
+  }
+
   async atualizarCategoria(
     categoria: string,
     atualizarCategoriaDto: AtualizarCategoriaDto,
