@@ -1,22 +1,25 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Desafio } from './interfaces/desafio.interface';
+import { Desafio, Partida } from './interfaces/desafio.interface';
 import { CriarDesafioDto } from './dtos/criar-desafio.dto';
 import { JogadoresService } from '../jogadores/jogadores.service';
 import { CategoriasService } from '../categorias/categorias.service';
 import { DesafioStatus } from './interfaces/desafio-status.enum';
 import { AtualizarDesafioDto } from './dtos/atualizar-desafio.dto';
+import { AtribuirDesafioPartidaDto } from './dtos/atribuir-desafio-partida.dto';
 
 @Injectable()
 export class DesafiosService {
   constructor(
     @InjectModel('Desafio') private readonly desafioModel: Model<Desafio>,
+    @InjectModel('Partida') private readonly partidaModel: Model<Partida>,
     private readonly jogadoresService: JogadoresService,
     private readonly categoriasService: CategoriasService,
   ) {}
@@ -59,7 +62,12 @@ export class DesafiosService {
   }
 
   async consultarDesafios(): Promise<Desafio[]> {
-    return this.desafioModel.find().exec();
+    return this.desafioModel
+      .find()
+      .populate('solicitante')
+      .populate('jogadores')
+      .populate('partida')
+      .exec();
   }
 
   async consultarDesafioPeloIdJogador(idJogador: any): Promise<Desafio[]> {
@@ -69,6 +77,9 @@ export class DesafiosService {
       .find()
       .where('jogadores')
       .in(idJogador)
+      .populate('solicitante')
+      .populate('jogadores')
+      .populate('partida')
       .exec();
 
     return desafiosEncontrado;
@@ -87,6 +98,72 @@ export class DesafiosService {
     await this.desafioModel
       .findOneAndUpdate({ _id }, { $set: atualizarDesafioDto })
       .exec();
+  }
+
+  async atribuirDesafioPartida(
+    _id: string,
+    atribuirDesafioPartidaDto: AtribuirDesafioPartidaDto,
+  ): Promise<void> {
+    const desafioEncontrado = await this.desafioModel.findById(_id).exec();
+
+    if (!desafioEncontrado) {
+      throw new BadRequestException(`Desafio ${_id} não cadastrado!`);
+    }
+
+    /*
+    Verificar se o jogador vencedor faz parte do desafio
+    */
+    const jogadorFilter = desafioEncontrado.jogadores.filter(
+      (jogador) => jogador._id == atribuirDesafioPartidaDto.def,
+    );
+
+    if (jogadorFilter.length == 0) {
+      throw new BadRequestException(
+        `O jogador vencedor não faz parte do desafio!`,
+      );
+    }
+
+    /*
+    Primeiro vamos criar e persistir o objeto partida
+    */
+    const partidaCriada = new this.partidaModel(atribuirDesafioPartidaDto);
+
+    /*
+    Atribuir ao objeto partida a categoria recuperada no desafio
+   */
+    partidaCriada.categoria = desafioEncontrado.categoria;
+
+    /*
+    Atribuir ao objeto partida os jogadores que fizeram parte do desafio
+   */
+    partidaCriada.jogadores = desafioEncontrado.jogadores;
+
+    const resultado = await partidaCriada.save();
+
+    /*
+    Quando uma partida for registrada por um usuário, mudaremos o 
+    status do desafio para realizado
+    */
+    desafioEncontrado.status = DesafioStatus.REALIZADO;
+
+    /*  
+    Recuperamos o ID da partida e atribuimos ao desafio
+    */
+    desafioEncontrado.partida = resultado._id as Partida;
+
+    try {
+      await this.desafioModel
+        .findOneAndUpdate({ _id }, { $set: desafioEncontrado })
+        .exec();
+    } catch (error) {
+      /*
+        Se a atualização do desafio falhar excluímos a partida 
+        gravada anteriormente
+        */
+      console.log(error);
+      await this.partidaModel.deleteOne({ _id: resultado._id }).exec();
+      throw new InternalServerErrorException();
+    }
   }
 
   async deletarDesafio(_id: string): Promise<void> {
